@@ -1,4 +1,4 @@
-# 🛡️ KPMG CTF 2026 Campus Edition — Writeups & Solutions
+# 🛡️ KPMG CTF 2026 — Writeups & Solutions
 
 [![CTF](https://img.shields.io/badge/CTF-KPMG%20Campus%20Edition%202026-blue?style=for-the-badge&logo=target)](https://kicyber.ctfd.io/)
 [![Platform](https://img.shields.io/badge/Platform-KICyber%20CTFd-orange?style=for-the-badge&logo=securityscorecard)](https://kicyber.ctfd.io/)
