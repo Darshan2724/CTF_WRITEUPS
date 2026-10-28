@@ -1,12 +1,5 @@
 # 🛡️ KPMG CTF 2026 — Writeups & Solutions
 
-[![CTF](https://img.shields.io/badge/CTF-KPMG%20Campus%20Edition%202026-blue?style=for-the-badge&logo=target)](https://kicyber.ctfd.io/)
-[![Platform](https://img.shields.io/badge/Platform-KICyber%20CTFd-orange?style=for-the-badge&logo=securityscorecard)](https://kicyber.ctfd.io/)
-[![Categories](https://img.shields.io/badge/Categories-Web%20%7C%20Rev%20%7C%20Pwn%20%7C%20Forensics%20%7C%20Crypto%20%7C%20AI%20%7C%20OT-green?style=for-the-badge)](.)
-[![Solves](https://img.shields.io/badge/Status-100%25%20Documented-brightgreen?style=for-the-badge)](.)
-
-Welcome to the comprehensive, structured repository of technical writeups, exploit scripts, and methodology notes for **KPMG CTF 2026 Campus Edition** (hosted on the KICyber CTFd platform).
-
 Each writeup contains a thorough breakdown of the initial problem, vulnerability analysis, step-by-step reproduction ("How I Solved It"), exploit scripts/payloads, captured flags, and defensive hardening takeaways.
 
 ---
